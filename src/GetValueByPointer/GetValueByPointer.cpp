@@ -29,6 +29,8 @@
 
 #include "rapidjson/document.h"
 #include "rapidjson/pointer.h"
+#include "rapidjson/stringbuffer.h"
+#include "rapidjson/writer.h"
 #include "rapidjson/error/en.h"
 
 using namespace nz::udx_ver2;
@@ -93,11 +95,14 @@ public:
 			throwUdxException(msg);
 		}
 
+		// retrieve value
 		Value* result = pointer.Get(document);
 		if (!result || result->IsNull()) {
 			logMsg(LOG_DEBUG, "RESULT: NULL\n");
 			NZ_UDX_RETURN_NULL();
 		}
+
+		// handle results
 		if (result->IsBool()) {
 			if (STRING_TYPE(returnType())) {
 				StringReturn* ret = stringReturnInfo();
@@ -109,7 +114,7 @@ public:
 			logMsg(LOG_DEBUG, "RESULT: %s\n", result->GetBool() ? "true" : "false");
 			NZ_UDX_RETURN_BOOL(result->GetBool());
 		}
-		if (result->IsInt()) {		// check for Int first to do the 'smallest' ones earlier
+		if (result->IsInt()) {		// check for Int first to do the 'smallest' ones early
 			if (STRING_TYPE(returnType())) {
 				StringReturn* ret = stringReturnInfo();
 				sprintf(ret->data, "%ld", result->GetInt());
@@ -147,17 +152,26 @@ public:
 			memcpy(ret->data, result->GetString(), ret->size);
 			NZ_UDX_RETURN_STRING(ret);
 		}
-		if (result->IsObject()) {		// TODO
+		if (result->IsObject() || result->IsArray()) {
 			// output: JSON object stringified
+			if (!STRING_TYPE(returnType())) {
+				throwUdxException("return type is not a string type");
+			}
+			StringBuffer sb;
+			Writer<StringBuffer> writer(sb);
+			if(!Stringify(&writer, result)) {
+				throwUdxException("can not stringify result");
+			}
 			StringReturn* ret = stringReturnInfo();
-			logMsg(LOG_DEBUG, "RESULT: %.*s\n", result->GetStringLength(), result->GetString());
-			ret->size = result->GetStringLength();
-			memcpy(ret->data, result->GetString(), ret->size);
+			logMsg(LOG_DEBUG, "RESULT: %.*s\n", sb.GetSize(), sb.GetString());
+			memcpy(ret->data, sb.GetString(), sb.GetSize());
 			NZ_UDX_RETURN_STRING(ret);
 		}
 		// give up
 		throwUdxException("unknown how to handle data result");
 	}
+
+	bool Stringify(Writer<StringBuffer>* writer, Value* value);
 };
 
 GetValueByPointer::GetValueByPointer(UdxInit* pInit) : Udf(pInit) {
@@ -166,4 +180,49 @@ GetValueByPointer::GetValueByPointer(UdxInit* pInit) : Udf(pInit) {
 
 Udf* GetValueByPointer::instantiate (UdxInit* pInit) {	
 	return new GetValueByPointer(pInit); 
+}
+
+bool GetValueByPointer::Stringify(Writer<StringBuffer>* writer, Value* value) {
+	if (value->IsNull()) {
+		writer->Null();
+		return true;
+	}
+	if (value->IsBool()) {
+		writer->Bool(value->GetBool());
+		return true;
+	}
+	if (value->IsInt()) {
+		writer->Int(value->GetInt());
+		return true;
+	}
+	if (value->IsInt64()) {
+		writer->Int64(value->GetInt64());
+		return true;
+	}
+	if (value->IsDouble()) {
+		writer->Double(value->GetDouble());
+		return true;
+	}
+	if (value->IsString()) {
+		writer->String(value->GetString());
+		return true;
+	}
+	if (value->IsArray()) {
+		writer->StartArray();
+		for (Value::ConstValueIterator itr = value->Begin(); itr != value->End(); ++itr) {
+			Stringify(writer, (Value *)itr);
+		}
+		writer->EndArray();
+		return true;
+	}
+	if (value->IsObject()) {
+		writer->StartObject();
+		for (Value::ConstMemberIterator itr = value->MemberBegin(); itr != value->MemberEnd(); ++itr) {
+			writer->Key(itr->name.GetString());
+			Stringify(writer, (Value *)&(itr->value));
+		}
+		writer->EndObject();
+		return true;
+	}
+	return true;
 }
